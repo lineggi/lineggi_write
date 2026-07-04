@@ -21,7 +21,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from ai_generator import AIGenerator
-from brunch_service import fetch_recent_titles
 from crawler import naver_crawler
 from naver_service import get_news_content, save_news_to_sheet
 from perplexity_service import PerplexityService
@@ -52,7 +51,6 @@ class Config:
     sheet_name: str
     use_perplexity: bool
     debug_telegram_ping: bool
-    brunch_url: str          # 제목 스타일 참고용 브런치 작가 페이지
     trend_domain: str        # 키워드 추천 기본 분야 (예: 크립토)
 
 
@@ -79,7 +77,6 @@ def load_config() -> Config:
         sheet_name=os.getenv("SHEET_NAME", "AI_Writing_Brunch"),
         use_perplexity=_bool_env("USE_PERPLEXITY", True),
         debug_telegram_ping=_bool_env("DEBUG_TELEGRAM_PING", True),
-        brunch_url=os.getenv("BRUNCH_URL", "https://brunch.co.kr/@line-ggi"),
         trend_domain=os.getenv("TREND_DOMAIN", "크립토"),
     )
 
@@ -131,7 +128,6 @@ class NewsBriefingBot:
         self.all_news: List[Dict] = []
         self.suggestion_data: List[str] = []
         self.last_topics: str = ""     # 서비스 객체가 아닌 봇이 상태를 소유
-        self.brunch_titles: List[str] = []  # 제목 후킹 스타일 참고자료
         self.recommended_keywords: List[str] = []  # 번호 선택용 추천 키워드
         self.processing_lock = False   # 중복 실행 방지
         self._last_update_id = -1      # 텔레그램 업데이트 오프셋 (키워드 입력/콜백 공용)
@@ -342,7 +338,7 @@ class NewsBriefingBot:
             group_text = f"[{kw} 관련]\n" + "\n".join(f"- {n['title']}" for n in kw_top)
             self.suggestion_data.append(group_text)
 
-        topics = self.ai.get_5_topics(self.suggestion_data, style_examples=self.brunch_titles)
+        topics = self.ai.get_5_topics(self.suggestion_data)
 
         if topics and "❌" not in topics:
             self.last_topics = topics
@@ -386,7 +382,7 @@ class NewsBriefingBot:
         self.processing_lock = True
         try:
             self.send("🔄 주제 재생성 중...")
-            new_topics = self.ai.get_5_topics(self.suggestion_data, style_examples=self.brunch_titles)
+            new_topics = self.ai.get_5_topics(self.suggestion_data)
             self.last_topics = new_topics
             self.send(f"📝 재제안 주제\n\n{new_topics}", reply_markup=get_full_keyboard())
         finally:
@@ -449,11 +445,6 @@ class NewsBriefingBot:
         logger.info("main 시작")
         self._drain_pending_updates()
         self.send("🚀 뉴스 브리핑 봇 시작 (Text:Gemini)")
-
-        # 제목 후킹 스타일 참고용: 브런치 최근 제목 (best-effort, 실패해도 계속)
-        self.brunch_titles = fetch_recent_titles(self.cfg.brunch_url)
-        if self.brunch_titles:
-            logger.info("브런치 제목 %d개 참고", len(self.brunch_titles))
 
         if not self.keywords:
             self.recommend_keywords()
