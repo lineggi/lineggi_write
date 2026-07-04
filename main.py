@@ -1,11 +1,17 @@
-"""뉴스 브리핑 봇 진입점."""
+"""뉴스 브리핑 봇 진입점.
+
+키워드는 매 실행마다 달라지므로 .env 에 두지 않는다:
+  1) 명령줄:  python main.py "솔라나,토스뱅크"
+  2) 생략 시: 봇이 텔레그램으로 키워드를 물어보고 답장을 기다림
+"""
 import json
 import logging
 import os
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import requests
 
@@ -39,7 +45,6 @@ class Config:
     perplexity_api_key: str
     my_chat_id: str
     sheet_name: str
-    keywords: List[str]
     use_perplexity: bool
     debug_telegram_ping: bool
 
@@ -59,7 +64,6 @@ def _bool_env(name: str, default: bool) -> bool:
 
 
 def load_config() -> Config:
-    raw_keywords = os.getenv("KEYWORDS", "솔라나,토스뱅크,스테이블코인,블록체인 해외송금")
     return Config(
         telegram_token=_require_env("TELEGRAM_TOKEN"),
         gemini_api_key=_require_env("GEMINI_API_KEY"),
@@ -67,7 +71,6 @@ def load_config() -> Config:
         perplexity_api_key=os.getenv("PERPLEXITY_API_KEY", ""),
         my_chat_id=_require_env("MY_CHAT_ID"),
         sheet_name=os.getenv("SHEET_NAME", "AI_Writing_Brunch"),
-        keywords=[k.strip() for k in raw_keywords.split(",") if k.strip()],
         use_perplexity=_bool_env("USE_PERPLEXITY", True),
         debug_telegram_ping=_bool_env("DEBUG_TELEGRAM_PING", True),
     )
@@ -84,6 +87,11 @@ def get_full_keyboard() -> str:
         ]
     }
     return json.dumps(keyboard)
+
+
+def parse_keywords(text: str) -> List[str]:
+    """'솔라나, 토스뱅크' 같은 쉼표 구분 문자열을 키워드 리스트로 변환."""
+    return [k.strip() for k in (text or "").split(",") if k.strip()]
 
 
 def archive_facts(facts: str) -> str:
@@ -103,9 +111,10 @@ def archive_facts(facts: str) -> str:
 # 봇 본체
 # =========================
 class NewsBriefingBot:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, keywords: Optional[List[str]] = None):
         self.cfg = config
         self.chat_id = config.my_chat_id
+        self.keywords: List[str] = keywords or []
 
         self.tg = TelegramService(config.telegram_token)
         self.ai = AIGenerator(
@@ -118,6 +127,7 @@ class NewsBriefingBot:
         self.suggestion_data: List[str] = []
         self.last_topics: str = ""     # 서비스 객체가 아닌 봇이 상태를 소유
         self.processing_lock = False   # 중복 실행 방지
+        self._last_update_id = -1      # 텔레그램 업데이트 오프셋 (키워드 입력/콜백 공용)
 
     # ---------- 텔레그램 헬퍼 ----------
     def send(self, text: str, **kwargs):
@@ -149,12 +159,44 @@ class NewsBriefingBot:
         except requests.RequestException:
             logger.warning("answer_callback_query 실패", exc_info=True)
 
+    # ---------- 텔레그램 업데이트 폴링 ----------
+    def _poll_updates(self, timeout: int = 30) -> List[Dict]:
+        updates = self.tg.get_updates(offset=self._last_update_id + 1, timeout=timeout)
+        for u in updates:
+            self._last_update_id = u.get("update_id", self._last_update_id)
+        return updates
+
+    def _drain_pending_updates(self):
+        """봇 시작 전에 쌓여 있던 오래된 메시지를 건너뛴다."""
+        while self._poll_updates(timeout=0):
+            pass
+
+    # ---------- Step 0) 키워드 입력 ----------
+    def ask_keywords(self) -> List[str]:
+        """텔레그램으로 키워드를 물어보고 답장을 기다린다."""
+        self.send(
+            "🔍 이번에 수집할 키워드를 쉼표(,)로 구분해서 보내주세요.\n"
+            "예) 솔라나,토스뱅크,스테이블코인"
+        )
+        while True:
+            for update in self._poll_updates():
+                msg = update.get("message") or {}
+                if str((msg.get("chat") or {}).get("id")) != str(self.chat_id):
+                    continue
+                keywords = parse_keywords(msg.get("text", ""))
+                if keywords:
+                    self.send(f"✅ 키워드 설정: {', '.join(keywords)}")
+                    return keywords
+                if msg.get("text"):
+                    self.send("⚠️ 키워드를 인식하지 못했어요. 쉼표로 구분해 다시 보내주세요.")
+            time.sleep(1)
+
     # ---------- Step 1) 뉴스 수집 ----------
     def collect_news(self) -> bool:
         self.debug("Step1 시작(뉴스 수집)")
         self.all_news = []
 
-        for kw in self.cfg.keywords:
+        for kw in self.keywords:
             try:
                 items = naver_crawler.get_news(kw)
             except Exception:
@@ -190,7 +232,7 @@ class NewsBriefingBot:
     def suggest_topics(self) -> bool:
         self.debug("Step3 시작(주제 생성)")
         self.suggestion_data = []
-        for kw in self.cfg.keywords:
+        for kw in self.keywords:
             kw_top = [
                 n for n in self.all_news
                 if n["keyword"] == kw and n["relevance_rank"] <= TOPIC_RANK_LIMIT
@@ -211,17 +253,12 @@ class NewsBriefingBot:
 
     # ---------- Step 4) 콜백 루프 ----------
     def run_callback_loop(self):
-        last_update_id = -1
         self.debug("Step4 시작(대기 모드)")
 
         while True:
-            updates = self.tg.get_updates(offset=last_update_id + 1)
-
-            for update in updates:
-                last_update_id = update.get("update_id", last_update_id)
+            for update in self._poll_updates():
                 if "callback_query" in update:
                     self._handle_callback(update["callback_query"])
-
             time.sleep(1)
 
     def _handle_callback(self, query: Dict):
@@ -299,7 +336,11 @@ class NewsBriefingBot:
     # ---------- 엔트리포인트 ----------
     def run(self):
         logger.info("main 시작")
+        self._drain_pending_updates()
         self.send("🚀 뉴스 브리핑 봇 시작 (Text:Gemini / Img:Flat Design)")
+
+        if not self.keywords:
+            self.keywords = self.ask_keywords()
 
         if not self.collect_news():
             self.send("❌ 수집된 뉴스가 없습니다.")
@@ -314,7 +355,9 @@ class NewsBriefingBot:
 
 
 def main():
-    NewsBriefingBot(load_config()).run()
+    # 키워드는 매 실행마다 바뀌므로 명령줄 인자로 받는다 (생략 시 텔레그램에서 질문)
+    keywords = parse_keywords(" ".join(sys.argv[1:])) if len(sys.argv) > 1 else None
+    NewsBriefingBot(load_config(), keywords=keywords).run()
 
 
 if __name__ == "__main__":
