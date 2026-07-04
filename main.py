@@ -14,6 +14,11 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 import requests
+from dotenv import load_dotenv
+
+# .env 파일의 키들을 환경변수로 로드 (다른 모듈 import 전에 실행 —
+# crawler 등이 import 시점에 환경변수를 읽기 때문)
+load_dotenv()
 
 from ai_generator import AIGenerator
 from brunch_service import fetch_recent_titles
