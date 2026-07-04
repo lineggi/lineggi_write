@@ -16,6 +16,7 @@ from typing import Dict, List, Optional
 import requests
 
 from ai_generator import AIGenerator
+from brunch_service import fetch_recent_titles
 from crawler import naver_crawler
 from naver_service import get_news_content, save_news_to_sheet
 from perplexity_service import PerplexityService
@@ -46,6 +47,8 @@ class Config:
     sheet_name: str
     use_perplexity: bool
     debug_telegram_ping: bool
+    brunch_url: str          # 제목 스타일 참고용 브런치 작가 페이지
+    trend_domain: str        # 키워드 추천 기본 분야 (예: 크립토)
 
 
 def _require_env(name: str) -> str:
@@ -71,6 +74,8 @@ def load_config() -> Config:
         sheet_name=os.getenv("SHEET_NAME", "AI_Writing_Brunch"),
         use_perplexity=_bool_env("USE_PERPLEXITY", True),
         debug_telegram_ping=_bool_env("DEBUG_TELEGRAM_PING", True),
+        brunch_url=os.getenv("BRUNCH_URL", "https://brunch.co.kr/@line-ggi"),
+        trend_domain=os.getenv("TREND_DOMAIN", "크립토"),
     )
 
 
@@ -121,6 +126,7 @@ class NewsBriefingBot:
         self.all_news: List[Dict] = []
         self.suggestion_data: List[str] = []
         self.last_topics: str = ""     # 서비스 객체가 아닌 봇이 상태를 소유
+        self.brunch_titles: List[str] = []  # 제목 후킹 스타일 참고자료
         self.processing_lock = False   # 중복 실행 방지
         self._last_update_id = -1      # 텔레그램 업데이트 오프셋 (키워드 입력/콜백 공용)
 
@@ -166,25 +172,52 @@ class NewsBriefingBot:
         while self._poll_updates(timeout=0):
             pass
 
-    # ---------- Step 0) 키워드 입력 ----------
-    def ask_keywords(self) -> List[str]:
-        """텔레그램으로 키워드를 물어보고 답장을 기다린다."""
-        self.send(
-            "🔍 이번에 수집할 키워드를 쉼표(,)로 구분해서 보내주세요.\n"
-            "예) 솔라나,토스뱅크,스테이블코인"
-        )
+    def _wait_for_text(self) -> str:
+        """내 채팅에서 다음 텍스트 메시지 한 건을 기다려 반환한다."""
         while True:
             for update in self._poll_updates():
                 msg = update.get("message") or {}
                 if str((msg.get("chat") or {}).get("id")) != str(self.chat_id):
                     continue
-                keywords = parse_keywords(msg.get("text", ""))
-                if keywords:
-                    self.send(f"✅ 키워드 설정: {', '.join(keywords)}")
-                    return keywords
-                if msg.get("text"):
-                    self.send("⚠️ 키워드를 인식하지 못했어요. 쉼표로 구분해 다시 보내주세요.")
+                text = (msg.get("text") or "").strip()
+                if text:
+                    return text
             time.sleep(1)
+
+    # ---------- Step 0) 키워드 추천 & 입력 ----------
+    def recommend_keywords(self):
+        """분야를 물어보고, Perplexity로 요즘 화제인 키워드를 추천해준다."""
+        if not self.cfg.use_perplexity:
+            return
+        self.send(
+            f"📈 어떤 분야의 트렌드를 볼까요? (예: 크립토)\n"
+            f"그냥 보내면 기본값 '{self.cfg.trend_domain}' 로 진행해요."
+        )
+        domain = self._wait_for_text()
+        if domain.lower() in ("기본", "default", "-"):
+            domain = self.cfg.trend_domain
+
+        self.send(f"🔎 '{domain}' 분야에서 요즘 화제인 키워드를 찾는 중...")
+        recs = self.px.discover_trending_keywords(domain)
+        if not recs:
+            self.send("⚠️ 트렌드 키워드를 못 가져왔어요. 원하는 키워드를 직접 입력해주세요.")
+            return
+
+        lines = "\n".join(f"{i}. {r['keyword']} — {r['reason']}" for i, r in enumerate(recs, 1))
+        self.send(f"💡 '{domain}' 요즘 화제 키워드\n\n{lines}")
+
+    def ask_keywords(self) -> List[str]:
+        """텔레그램으로 키워드를 물어보고 답장을 기다린다."""
+        self.send(
+            "🔍 위 추천 중 원하는 키워드를 쉼표(,)로 입력하거나, 직접 입력해주세요.\n"
+            "예) 솔라나,토스뱅크,스테이블코인"
+        )
+        while True:
+            keywords = parse_keywords(self._wait_for_text())
+            if keywords:
+                self.send(f"✅ 키워드 설정: {', '.join(keywords)}")
+                return keywords
+            self.send("⚠️ 키워드를 인식하지 못했어요. 쉼표로 구분해 다시 보내주세요.")
 
     # ---------- Step 1) 뉴스 수집 ----------
     def collect_news(self) -> bool:
@@ -235,7 +268,7 @@ class NewsBriefingBot:
             group_text = f"[{kw} 관련]\n" + "\n".join(f"- {n['title']}" for n in kw_top)
             self.suggestion_data.append(group_text)
 
-        topics = self.ai.get_5_topics(self.suggestion_data)
+        topics = self.ai.get_5_topics(self.suggestion_data, style_examples=self.brunch_titles)
 
         if topics and "❌" not in topics:
             self.last_topics = topics
@@ -279,7 +312,7 @@ class NewsBriefingBot:
         self.processing_lock = True
         try:
             self.send("🔄 주제 재생성 중...")
-            new_topics = self.ai.get_5_topics(self.suggestion_data)
+            new_topics = self.ai.get_5_topics(self.suggestion_data, style_examples=self.brunch_titles)
             self.last_topics = new_topics
             self.send(f"📝 재제안 주제\n\n{new_topics}", reply_markup=get_full_keyboard())
         finally:
@@ -334,7 +367,13 @@ class NewsBriefingBot:
         self._drain_pending_updates()
         self.send("🚀 뉴스 브리핑 봇 시작 (Text:Gemini)")
 
+        # 제목 후킹 스타일 참고용: 브런치 최근 제목 (best-effort, 실패해도 계속)
+        self.brunch_titles = fetch_recent_titles(self.cfg.brunch_url)
+        if self.brunch_titles:
+            logger.info("브런치 제목 %d개 참고", len(self.brunch_titles))
+
         if not self.keywords:
+            self.recommend_keywords()
             self.keywords = self.ask_keywords()
 
         if not self.collect_news():

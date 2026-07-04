@@ -45,21 +45,34 @@ class AIGenerator:
     # -----------------------------
     # (REQ-1) 주제 제안
     # -----------------------------
-    def get_5_topics(self, suggestion_data: List[str]) -> str:
+    def get_5_topics(self, suggestion_data: List[str], style_examples: List[str] = None) -> str:
         if not suggestion_data:
             return "❌ 뉴스 데이터가 없습니다."
         context_data = "\n\n".join(suggestion_data)
+
+        # 내가 기존에 발행한 제목들을 후킹 스타일 참고자료로 주입 (있을 때만)
+        style_block = ""
+        if style_examples:
+            examples = "\n".join(f"- {t}" for t in style_examples[:15])
+            style_block = f"""
+[내가 기존에 발행한 인기 글 제목 — 이 톤과 후킹 방식을 학습해라]
+{examples}
+
+위 제목들의 어조·리듬·클릭 유도 방식을 참고하되 그대로 베끼지 말고,
+더 후킹성 있고 사람들이 클릭하고 싶게 만드는 제목으로 발전시켜라.
+"""
 
         prompt = f"""
 너는 브런치 제목만 뽑는 편집자다. 아래 뉴스 제목 묶음을 보고 제목 5개를 만든다.
 
 [분석 데이터]
 {context_data}
-
+{style_block}
 [핵심 규칙]
 - 제목은 무조건 숫자 포함
 - 패턴: A) "<핵심 주제>, ~하는 N가지 방법", B) "<핵심 주제>, ~이 아닌 이유 N가지", C) "<핵심 주제>, ~인 N가지 이유", D) "~라면 누구나 알아야 할 <핵심 주제>"
 - 과장/단정 금지. 30자 이내.
+- 궁금증을 자극해 클릭을 유도하는 후킹성을 최우선으로 한다.
 
 [출력 형식 고정]
 1. 제목: ...

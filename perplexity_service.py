@@ -44,6 +44,42 @@ class PerplexityService:
     # -----------------------------
     # Public API
     # -----------------------------
+    def discover_trending_keywords(self, domain: str, n: int = 5) -> List[Dict]:
+        """실시간 웹 검색으로 특정 분야에서 요즘 화제인 키워드 n개를 발굴한다.
+
+        반환: [{"keyword": "...", "reason": "..."}, ...]  (실패 시 빈 리스트)
+        """
+        if not self.api_key:
+            return []
+
+        prompt = f"""
+너는 트렌드 분석가다. 지금 시점 기준으로 '{domain}' 분야에서
+한국 대중이 가장 관심을 많이 가질 만한 이슈/키워드 {n}개를 골라라.
+
+[규칙]
+- 각 줄을 정확히 "키워드 | 이유(한 문장)" 형식으로만 출력
+- 키워드는 뉴스 검색에 바로 쓸 수 있는 짧은 명사구(2~10자 권장)
+- 최신 이슈 우선, 너무 일반적인 단어(예: '{domain}') 자체는 제외
+- 설명/서론/번호/불릿 없이 {n}줄만 출력
+""".strip()
+
+        raw = self._call_perplexity(prompt)
+        if raw.startswith("❌"):
+            logger.warning("트렌드 키워드 발굴 실패: %s", raw)
+            return []
+
+        results = []
+        for ln in (ln.strip() for ln in raw.splitlines() if ln.strip()):
+            # "키워드 | 이유" 파싱 (번호/불릿 접두어 제거)
+            ln = re.sub(r"^(?:[-•*]|\d+[\)\.])\s*", "", ln)
+            if "|" not in ln:
+                continue
+            kw, _, reason = ln.partition("|")
+            kw = kw.strip().strip("\"'")
+            if kw:
+                results.append({"keyword": kw, "reason": reason.strip()})
+        return results[:n]
+
     def summarize_to_facts(self, selected_title: str, rep_news: List[Dict]) -> str:
         if not self.api_key:
             return ""
