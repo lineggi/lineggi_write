@@ -9,16 +9,24 @@ cd "$(dirname "$0")" || exit 1
 
 echo "📂 실행 위치: $(pwd)"
 
-# 가상환경(venv)이 없으면 최초 1회 자동 생성 + 패키지 설치
+# 최신 코드 자동 내려받기 (git pull) — 실패해도 기존 코드로 계속 실행
+if command -v git >/dev/null 2>&1 && [ -d ".git" ]; then
+    echo "⬇️  최신 코드 확인 중 (git pull)..."
+    git pull --ff-only || echo "⚠️  git pull 실패(네트워크/충돌) — 기존 코드로 실행합니다."
+fi
+
+# 가상환경(venv)이 없으면 최초 1회 생성
 if [ ! -d "venv" ]; then
-    echo "🔧 최초 실행 준비 중... 가상환경 생성 및 패키지 설치 (1~2분 걸릴 수 있어요)"
+    echo "🔧 최초 실행 준비 중... 가상환경 생성 (1~2분 걸릴 수 있어요)"
     python3 -m venv venv || { echo "❌ 가상환경 생성 실패 — python3 가 설치되어 있는지 확인하세요."; read -r; exit 1; }
     source venv/bin/activate
     python3 -m pip install --quiet --upgrade pip
-    python3 -m pip install --quiet -r requirements.txt || { echo "❌ 패키지 설치 실패"; read -r; exit 1; }
 else
     source venv/bin/activate
 fi
+
+# 필요한 패키지 설치/동기화 (git pull 로 새 패키지가 추가돼도 자동 반영)
+python3 -m pip install --quiet -r requirements.txt || echo "⚠️  패키지 설치 확인 실패 — 기존 상태로 실행합니다."
 
 # .env 파일 확인
 if [ ! -f ".env" ]; then
