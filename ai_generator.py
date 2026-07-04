@@ -4,27 +4,40 @@ import time
 from typing import Dict, List
 
 from google import genai
+from google.genai import types
 
 logger = logging.getLogger(__name__)
 
 END_MARKER = "<END>"
+LONG_MAX_TOKENS = 8192  # 본문(장문) 생성 시 출력 한도 — 기본값 잘림 방지
+
 # 프롬프트가 '소비자' 사용을 금지하므로, 체크리스트 마지막 항목인
-# '산업 관계자'를 폴백 종료 지점으로 삼는다. (기존 '소비자 :' 정규식은
-# 프롬프트 규칙과 모순되어 절대 매치되지 않던 죽은 코드였음)
+# '산업 관계자'를 폴백 종료 지점으로 삼는다. ('- ' 접두어/전각 콜론 허용)
 _CHECKLIST_END_RE = re.compile(
-    r"(액션 아이템\s*\(독자별 체크리스트\)[\s\S]*?^\s*산업 관계자\s*:\s*.*?$)",
+    r"(액션 아이템\s*\(독자별 체크리스트\)[\s\S]*?^\s*-?\s*산업 관계자\s*[:：]\s*.*?$)",
+    re.MULTILINE,
+)
+# 산업 관계자 줄이 누락된 출력을 위한 2차 폴백 (시장 관망자 줄까지)
+_CHECKLIST_END_RE2 = re.compile(
+    r"(액션 아이템\s*\(독자별 체크리스트\)[\s\S]*?^\s*-?\s*시장 관망자\s*[:：]\s*.*?$)",
     re.MULTILINE,
 )
 
 
 class AIGenerator:
+    # 제목/요약 등 짧은 생성: 빠르고 저렴한 flash 우선
+    PREFERRED_TEXT = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    # 본문(장문) 생성: 논리·문장 완성도가 좋은 pro 우선, 없으면 flash 폴백
+    PREFERRED_LONG = ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+
     def __init__(self, google_api_key: str):
         self.client = genai.Client(api_key=google_api_key)
-        self.preferred = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
-        self.model_id = self._pick_model()
-        logger.info("모델 설정 완료: Text=%s", self.model_id)
+        available = self._list_models()
+        self.model_id = self._choose_model(available, self.PREFERRED_TEXT)
+        self.long_model_id = self._choose_model(available, self.PREFERRED_LONG)
+        logger.info("모델 설정 완료: Text=%s / Long=%s", self.model_id, self.long_model_id)
 
-    def _pick_model(self) -> str:
+    def _list_models(self) -> List[str]:
         available = []
         try:
             for m in self.client.models.list():
@@ -34,10 +47,13 @@ class AIGenerator:
                     available.append(name.replace("models/", ""))
         except Exception:
             logger.warning("모델 목록 조회 실패 — 기본 모델 사용", exc_info=True)
-            return self.preferred[-1]
+        return available
+
+    @staticmethod
+    def _choose_model(available: List[str], preferred: List[str]) -> str:
         if not available:
-            return self.preferred[-1]
-        for p in self.preferred:
+            return preferred[-1]
+        for p in preferred:
             if p in available:
                 return p
         return available[0]
@@ -144,8 +160,19 @@ class AIGenerator:
     # -----------------------------
     def generate_article_from_facts(self, selected_title: str, facts_bullets: str, rep_news: List[Dict]) -> str:
         short_title = self._strip_topic_prefix(selected_title)
-        n_count = self.extract_n_count(selected_title, default=3)
-        citations_text = "\n".join(f"N{i}: {n.get('title', '')}" for i, n in enumerate(rep_news[:6], 1))
+
+        # 제목에 숫자가 있으면 그 개수로 고정, 없으면(역설형/인용형 제목 등)
+        # 내용 흐름에 맞게 2~4개 중 선택하도록 유연하게 지시
+        explicit_n = self.extract_n_count(selected_title, default=0)
+        if explicit_n:
+            n_text = f"{explicit_n}가지"
+            n_para_text = f"{explicit_n}개의 문단 작성."
+        else:
+            n_text = "N가지 (N은 2~4 중 내용에 맞게 선택)"
+            n_para_text = "선택한 N개의 문단 작성."
+
+        # 팩트 불릿의 (출처: 기사N) 표기와 같은 라벨을 사용해 매핑 혼동 방지
+        citations_text = "\n".join(f"기사{i}: {n.get('title', '')}" for i, n in enumerate(rep_news[:6], 1))
 
         prompt = f"""
 너는 브런치 작가이자 가상자산 전문 리서처다.
@@ -154,7 +181,7 @@ class AIGenerator:
 
 [입력 데이터]
 - 제목 키워드: {short_title}
-- 핵심 항목 수(N): {n_count}
+- 핵심 항목 수: {n_text}
 - 참고 기사: {citations_text}
 - 팩트 불릿: {facts_bullets}
 
@@ -171,8 +198,8 @@ class AIGenerator:
 4) What 섹션 (섹션명: 현상에 대한 직관적 제목):
    - 본문 3~4문단.
    - 문단 끝에 [지금 체크할 점] 포함.
-5) Why 섹션 (섹션명: 핵심 원인 {n_count}가지):
-   - {n_count}개의 문단 작성.
+5) Why 섹션 (섹션명: 핵심 원인 {n_text}):
+   - {n_para_text}
 6) How 섹션 (섹션명: 생존 및 대응 전략):
    - 실행 가능한 로드맵 3가지.
 7) 액션 아이템 (독자별 체크리스트):
@@ -184,7 +211,7 @@ class AIGenerator:
 [금지 사항]
 - ###, ** 등 마크다운 장식 절대 금지.
 - '소비자' 대신 '홀더', '시장 참여자' 사용.
-- 라벨(현상/원인 등) 직접 출력 금지.
+- 3줄 요약의 Why/What/How 라벨은 그대로 출력하되, 그 외 본문에서는 라벨(현상/원인 등) 직접 출력 금지.
 """.strip()
         return self.parse_end(self._safe_generate(prompt, is_long=True))
 
@@ -194,16 +221,23 @@ class AIGenerator:
             return "❌ 빈 응답"
         if END_MARKER in text:
             return text.split(END_MARKER, 1)[0].rstrip()
-        m = _CHECKLIST_END_RE.search(text)
-        if m:
-            return text[: m.end()].rstrip()
+        for pattern in (_CHECKLIST_END_RE, _CHECKLIST_END_RE2):
+            m = pattern.search(text)
+            if m:
+                return text[: m.end()].rstrip()
         return text.rstrip()
 
     def _safe_generate(self, prompt: str, is_long: bool = False, retries: int = 3) -> str:
+        # 장문은 pro 모델 + 출력 토큰 한도 상향 (본문이 중간에 잘리는 것 방지)
+        model = self.long_model_id if is_long else self.model_id
+        config = types.GenerateContentConfig(max_output_tokens=LONG_MAX_TOKENS) if is_long else None
+
         for attempt in range(1, retries + 1):
             try:
                 time.sleep(1)
-                resp = self.client.models.generate_content(model=self.model_id, contents=prompt)
+                resp = self.client.models.generate_content(
+                    model=model, contents=prompt, config=config
+                )
                 if resp.text:
                     return resp.text.strip()
             except Exception:

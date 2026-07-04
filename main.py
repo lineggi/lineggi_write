@@ -335,13 +335,22 @@ class NewsBriefingBot:
             if self.cfg.use_perplexity:
                 facts_bullets = self.px.summarize_to_facts(selected_title, rep_news)
 
-            if (not facts_bullets) or facts_bullets.startswith("❌"):
-                self.send("⚠️ 로컬 팩트 불릿 사용.")
+            used_fallback = (not facts_bullets) or facts_bullets.startswith("❌")
+            if used_fallback:
+                # 근거 기사 자체가 너무 적으면 부실한 글이 나오므로 중단
+                if len(rep_news) < 3:
+                    self.send("❌ 근거 기사가 부족해 본문 생성을 중단합니다. 다른 주제를 선택해주세요.")
+                    return
+                self.send(
+                    "⚠️ Perplexity 팩트 수집 실패 — 기사 제목만 근거로 작성합니다.\n"
+                    "숫자·인용 등 세부 사실은 발행 전 반드시 직접 확인하세요!"
+                )
                 facts_bullets = self.ai.fallback_facts(selected_title, rep_news)
 
             # 팩트 전문 파일 보관 + 텔레그램 전송
             facts_path = archive_facts(facts_bullets)
-            self.send(f"🧾 팩트 확보 완료 ({len(facts_bullets)}자, 저장: {facts_path})")
+            facts_label = "팩트(기사 제목 기반)" if used_fallback else "팩트 확보 완료"
+            self.send(f"🧾 {facts_label} ({len(facts_bullets)}자, 저장: {facts_path})")
             self.tg.send_long_message(self.chat_id, facts_bullets)
 
             # 3) 본문 생성 (Gemini) — END 마커 컷은 generate_article_from_facts

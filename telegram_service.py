@@ -57,10 +57,24 @@ class TelegramService:
             return {}
 
     def send_long_message(self, chat_id, text, parse_mode=None):
-        """텔레그램 한도(4096자)를 넘는 메시지 분할 전송"""
+        """텔레그램 한도(4096자)를 넘는 메시지 분할 전송.
+
+        문장이 중간에 끊기지 않도록 가급적 줄바꿈(문단) 경계에서 자른다.
+        """
         if len(text) <= TELEGRAM_MSG_LIMIT:
             return self.send_message(chat_id, text, parse_mode=parse_mode)
 
-        for i in range(0, len(text), LONG_MSG_CHUNK):
-            self.send_message(chat_id, text[i:i + LONG_MSG_CHUNK], parse_mode=parse_mode)
+        remaining = text
+        while remaining:
+            if len(remaining) <= LONG_MSG_CHUNK:
+                self.send_message(chat_id, remaining, parse_mode=parse_mode)
+                break
+
+            # 한도 안의 마지막 줄바꿈에서 자르되, 너무 앞이면(절반 미만) 그냥 한도에서 자름
+            cut = remaining.rfind("\n", 0, LONG_MSG_CHUNK)
+            if cut < LONG_MSG_CHUNK // 2:
+                cut = LONG_MSG_CHUNK
+
+            self.send_message(chat_id, remaining[:cut].rstrip(), parse_mode=parse_mode)
+            remaining = remaining[cut:].lstrip("\n")
             time.sleep(0.5)  # 순서 꼬임 방지 딜레이
