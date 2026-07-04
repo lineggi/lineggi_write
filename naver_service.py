@@ -5,6 +5,7 @@ from datetime import datetime
 import gspread
 import requests
 from bs4 import BeautifulSoup
+from gspread.exceptions import APIError, SpreadsheetNotFound
 
 logger = logging.getLogger(__name__)
 
@@ -56,14 +57,27 @@ def save_news_to_sheet(sheet_name, all_news):
 
     본문은 main.collect_news 에서 이미 수집한 top_content/bottom_content 를
     그대로 사용한다 — 여기서 get_news_content 를 다시 호출하지 않는다.
-    """
-    try:
-        current_path = os.path.dirname(os.path.abspath(__file__))
-        key_file = os.path.join(current_path, "credentials.json")
 
-        # gspread 최신 방식 (deprecated 된 oauth2client 불필요)
-        client = gspread.service_account(filename=key_file)
-        sheet = client.open(sheet_name).sheet1
+    반환: 텔레그램으로 그대로 보낼 수 있는 결과 메시지(성공/실패 이유).
+    """
+    if not all_news:
+        return "📊 시트에 저장할 기사가 없습니다."
+
+    current_path = os.path.dirname(os.path.abspath(__file__))
+    key_file = os.path.join(current_path, "credentials.json")
+
+    # 1) 인증 파일 존재 확인 — 가장 흔한 실패 원인
+    if not os.path.exists(key_file):
+        logger.error("credentials.json 없음: %s", key_file)
+        return (
+            "❌ 시트 저장 실패: credentials.json 파일이 프로젝트 폴더에 없습니다.\n"
+            "구글 서비스 계정 키 파일을 이 폴더에 넣어주세요."
+        )
+
+    try:
+        client = gspread.service_account(filename=key_file)  # 최신 방식
+        spreadsheet = client.open(sheet_name)
+        sheet = spreadsheet.sheet1
 
         if not sheet.get_all_values():
             sheet.append_row(SHEET_HEADER)
@@ -81,10 +95,24 @@ def save_news_to_sheet(sheet_name, all_news):
             ]
             for item in all_news
         ]
+        sheet.append_rows(new_rows)
+        logger.info("📊 %d개 기사가 '%s'에 저장되었습니다.", len(new_rows), sheet_name)
+        return f"📊 구글 시트 '{sheet_name}'에 {len(new_rows)}개 기사 저장 완료."
 
-        if new_rows:
-            sheet.append_rows(new_rows)
-            logger.info("📊 %d개의 기사가 '%s'에 추가되었습니다.", len(new_rows), sheet_name)
-
-    except Exception:
+    except SpreadsheetNotFound:
+        logger.error("시트를 찾을 수 없음: %s", sheet_name)
+        return (
+            f"❌ 시트 저장 실패: '{sheet_name}' 시트를 찾을 수 없습니다.\n"
+            "① SHEET_NAME 이 시트 문서 이름과 정확히 같은지, "
+            "② 그 시트를 서비스 계정 이메일(client_email)에 편집자로 공유했는지 확인하세요."
+        )
+    except APIError as e:
+        logger.exception("구글 API 오류")
+        return (
+            "❌ 시트 저장 실패: 구글 API 오류.\n"
+            "서비스 계정에 시트 편집 권한이 있는지, Google Sheets/Drive API가 "
+            f"활성화됐는지 확인하세요. ({str(e)[:120]})"
+        )
+    except Exception as e:
         logger.exception("시트 저장 오류")
+        return f"❌ 시트 저장 실패: {type(e).__name__} — {str(e)[:150]}"

@@ -324,7 +324,9 @@ class NewsBriefingBot:
     def save_to_sheet(self):
         self.debug("Step2 시작(시트 저장)")
         # 본문은 collect_news 에서 이미 수집했으므로 여기서 재크롤링하지 않는다
-        save_news_to_sheet(self.cfg.sheet_name, self.all_news)
+        result = save_news_to_sheet(self.cfg.sheet_name, self.all_news)
+        # 성공이든 실패든 결과를 텔레그램으로 알려 조용한 실패를 막는다
+        self.send(result)
 
     # ---------- Step 3) 주제 생성 ----------
     def suggest_topics(self) -> bool:
