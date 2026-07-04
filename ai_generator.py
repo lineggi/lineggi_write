@@ -4,7 +4,6 @@ import time
 from typing import Dict, List
 
 from google import genai
-from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -19,18 +18,11 @@ _CHECKLIST_END_RE = re.compile(
 
 
 class AIGenerator:
-    def __init__(self, google_api_key: str, openai_api_key: str):
+    def __init__(self, google_api_key: str):
         self.client = genai.Client(api_key=google_api_key)
-
-        if openai_api_key:
-            self.openai_client = OpenAI(api_key=openai_api_key)
-        else:
-            self.openai_client = None
-            logger.warning("OpenAI 키가 없어 이미지 생성이 불가능합니다.")
-
         self.preferred = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
         self.model_id = self._pick_model()
-        logger.info("모델 설정 완료: Text=%s / Image=DALL·E", self.model_id)
+        logger.info("모델 설정 완료: Text=%s", self.model_id)
 
     def _pick_model(self) -> str:
         available = []

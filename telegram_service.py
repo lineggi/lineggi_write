@@ -64,21 +64,3 @@ class TelegramService:
         for i in range(0, len(text), LONG_MSG_CHUNK):
             self.send_message(chat_id, text[i:i + LONG_MSG_CHUNK], parse_mode=parse_mode)
             time.sleep(0.5)  # 순서 꼬임 방지 딜레이
-
-    def send_photo(self, chat_id, photo_path, caption=None):
-        data = {"chat_id": chat_id}
-        if caption:
-            data["caption"] = caption
-
-        try:
-            with open(photo_path, "rb") as f:
-                resp = self.session.post(
-                    f"{self.base_url}/sendPhoto",
-                    data=data,
-                    files={"photo": f},
-                    timeout=60,  # 사진 업로드는 오래 걸릴 수 있음
-                )
-            return resp.json()
-        except Exception:
-            logger.exception("사진 전송 실패")
-            return {}

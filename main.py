@@ -41,7 +41,6 @@ FACTS_LOG_DIR = "logs"          # 팩트 전문 보관 위치
 class Config:
     telegram_token: str
     gemini_api_key: str
-    openai_api_key: str
     perplexity_api_key: str
     my_chat_id: str
     sheet_name: str
@@ -67,7 +66,6 @@ def load_config() -> Config:
     return Config(
         telegram_token=_require_env("TELEGRAM_TOKEN"),
         gemini_api_key=_require_env("GEMINI_API_KEY"),
-        openai_api_key=os.getenv("OPENAI_API_KEY", ""),
         perplexity_api_key=os.getenv("PERPLEXITY_API_KEY", ""),
         my_chat_id=_require_env("MY_CHAT_ID"),
         sheet_name=os.getenv("SHEET_NAME", "AI_Writing_Brunch"),
@@ -117,10 +115,7 @@ class NewsBriefingBot:
         self.keywords: List[str] = keywords or []
 
         self.tg = TelegramService(config.telegram_token)
-        self.ai = AIGenerator(
-            google_api_key=config.gemini_api_key,
-            openai_api_key=config.openai_api_key,
-        )
+        self.ai = AIGenerator(google_api_key=config.gemini_api_key)
         self.px = PerplexityService(config.perplexity_api_key)
 
         self.all_news: List[Dict] = []
@@ -337,7 +332,7 @@ class NewsBriefingBot:
     def run(self):
         logger.info("main 시작")
         self._drain_pending_updates()
-        self.send("🚀 뉴스 브리핑 봇 시작 (Text:Gemini / Img:Flat Design)")
+        self.send("🚀 뉴스 브리핑 봇 시작 (Text:Gemini)")
 
         if not self.keywords:
             self.keywords = self.ask_keywords()
