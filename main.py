@@ -132,6 +132,7 @@ class NewsBriefingBot:
         self.suggestion_data: List[str] = []
         self.last_topics: str = ""     # 서비스 객체가 아닌 봇이 상태를 소유
         self.brunch_titles: List[str] = []  # 제목 후킹 스타일 참고자료
+        self.recommended_keywords: List[str] = []  # 번호 선택용 추천 키워드
         self.processing_lock = False   # 중복 실행 방지
         self._last_update_id = -1      # 텔레그램 업데이트 오프셋 (키워드 입력/콜백 공용)
 
@@ -208,21 +209,89 @@ class NewsBriefingBot:
             self.send("⚠️ 트렌드 키워드를 못 가져왔어요. 원하는 키워드를 직접 입력해주세요.")
             return
 
+        # 버튼/번호로 선택할 수 있도록 추천 키워드를 순서대로 보관
+        self.recommended_keywords = [r["keyword"] for r in recs]
         lines = "\n".join(f"{i}. {r['keyword']} — {r['reason']}" for i, r in enumerate(recs, 1))
-        self.send(f"💡 '{domain}' 요즘 화제 키워드\n\n{lines}")
+        self.send(
+            f"💡 '{domain}' 요즘 화제 키워드\n\n{lines}\n\n👇 원하는 키워드를 눌러주세요.",
+            reply_markup=self._keyword_keyboard(),
+        )
+
+    def _keyword_keyboard(self) -> str:
+        """추천 키워드를 한 줄에 하나씩 버튼으로. callback_data는 인덱스(kw:i)."""
+        rows = [
+            [{"text": kw, "callback_data": f"kw:{i}"}]
+            for i, kw in enumerate(self.recommended_keywords)
+        ]
+        rows.append([{"text": "✍️ 직접 입력하기", "callback_data": "kw:manual"}])
+        return json.dumps({"inline_keyboard": rows})
+
+    def _resolve_keywords(self, text: str) -> List[str]:
+        """입력 텍스트를 키워드 리스트로 변환.
+
+        추천 목록의 번호(예: '2' 또는 '1,3')를 입력하면 해당 키워드로 치환하고,
+        그 외에는 입력한 텍스트를 그대로 키워드로 쓴다.
+        """
+        tokens = parse_keywords(text)
+        resolved = []
+        for tok in tokens:
+            if tok.isdigit() and 1 <= int(tok) <= len(self.recommended_keywords):
+                resolved.append(self.recommended_keywords[int(tok) - 1])
+            else:
+                resolved.append(tok)
+        return resolved
 
     def ask_keywords(self) -> List[str]:
-        """텔레그램으로 키워드를 물어보고 답장을 기다린다."""
-        self.send(
-            "🔍 위 추천 중 원하는 키워드를 쉼표(,)로 입력하거나, 직접 입력해주세요.\n"
-            "예) 솔라나,토스뱅크,스테이블코인"
-        )
+        """키워드를 버튼(콜백) 또는 텍스트(번호/직접입력)로 받는다."""
+        if not self.recommended_keywords:
+            self.send(
+                "🔍 수집할 키워드를 쉼표(,)로 구분해 입력해주세요.\n"
+                "예) 솔라나,토스뱅크,스테이블코인"
+            )
+        # else: 버튼 안내는 recommend_keywords 에서 이미 보냄
+
         while True:
-            keywords = parse_keywords(self._wait_for_text())
-            if keywords:
-                self.send(f"✅ 키워드 설정: {', '.join(keywords)}")
-                return keywords
-            self.send("⚠️ 키워드를 인식하지 못했어요. 쉼표로 구분해 다시 보내주세요.")
+            for update in self._poll_updates():
+                # 1) 버튼 탭(콜백)
+                cq = update.get("callback_query")
+                if cq:
+                    kws = self._handle_keyword_callback(cq)
+                    if kws:
+                        return kws
+                    continue
+                # 2) 텍스트 입력(번호 또는 직접 입력)
+                msg = update.get("message") or {}
+                if str((msg.get("chat") or {}).get("id")) != str(self.chat_id):
+                    continue
+                text = (msg.get("text") or "").strip()
+                if not text:
+                    continue
+                keywords = self._resolve_keywords(text)
+                if keywords:
+                    self.send(f"✅ 키워드 설정: {', '.join(keywords)}")
+                    return keywords
+                self.send("⚠️ 키워드를 인식하지 못했어요. 버튼을 누르거나 키워드를 입력해주세요.")
+            time.sleep(1)
+
+    def _handle_keyword_callback(self, cq: Dict) -> List[str]:
+        """키워드 선택 버튼 콜백 처리. 선택되면 [키워드] 반환, 아니면 빈 리스트."""
+        data = cq.get("data", "")
+        if cq.get("id"):
+            self.answer_callback_query(cq["id"])
+        msg_id = cq.get("message", {}).get("message_id")
+        if msg_id:
+            self.remove_inline_keyboard(msg_id)
+
+        if data == "kw:manual":
+            self.send("🔍 키워드를 쉼표(,)로 구분해 입력해주세요.\n예) 솔라나,토스뱅크")
+            return []
+        if data.startswith("kw:"):
+            idx = data[3:]
+            if idx.isdigit() and 0 <= int(idx) < len(self.recommended_keywords):
+                kw = self.recommended_keywords[int(idx)]
+                self.send(f"✅ 키워드 설정: {kw}")
+                return [kw]
+        return []
 
     # ---------- Step 1) 뉴스 수집 ----------
     def collect_news(self) -> bool:
