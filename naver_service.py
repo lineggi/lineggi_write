@@ -1,0 +1,90 @@
+import logging
+import os
+from datetime import datetime
+
+import gspread
+import requests
+from bs4 import BeautifulSoup
+
+logger = logging.getLogger(__name__)
+
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+)
+SHEET_HEADER = [
+    "발행시간", "키워드", "인기순위", "주제검색량",
+    "뉴스제목", "링크", "본문 상단(250자)", "본문 하단(250자)",
+]
+
+
+def get_news_content(url):
+    """뉴스 본문을 추출해 상단(100~350자 구간), 하단 250자로 분리한다."""
+    try:
+        res = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=5)
+        soup = BeautifulSoup(res.text, "html.parser")
+
+        # 불필요한 태그 제거 (광고, 버튼, 기자소개 등)
+        for s in soup(["script", "style", "header", "footer", "nav", "button", "aside", "form"]):
+            s.decompose()
+
+        # 주요 언론사 본문 영역 타겟팅
+        content = soup.select_one(
+            "article, #dic_area, #articleBodyContents, #article_body, .article_body, .news_con"
+        )
+        text = content.get_text(" ", strip=True) if content else ""
+
+        if not text:
+            text = " ".join(
+                p.get_text(strip=True)
+                for p in soup.find_all("p")
+                if len(p.get_text(strip=True)) > 30
+            )
+
+        # 상단 100자(리드/기자명 등) 건너뛰고 250자 추출
+        top_content = text[100:350] if len(text) > 350 else text[:250]
+        bottom_content = text[-250:] if len(text) > 250 else ""
+        return top_content, bottom_content
+
+    except Exception:
+        logger.warning("본문 추출 실패: %s", url, exc_info=True)
+        return "", ""
+
+
+def save_news_to_sheet(sheet_name, all_news):
+    """수집된 뉴스(all_news)를 구글 시트에 누적 저장한다.
+
+    본문은 main.collect_news 에서 이미 수집한 top_content/bottom_content 를
+    그대로 사용한다 — 여기서 get_news_content 를 다시 호출하지 않는다.
+    """
+    try:
+        current_path = os.path.dirname(os.path.abspath(__file__))
+        key_file = os.path.join(current_path, "credentials.json")
+
+        # gspread 최신 방식 (deprecated 된 oauth2client 불필요)
+        client = gspread.service_account(filename=key_file)
+        sheet = client.open(sheet_name).sheet1
+
+        if not sheet.get_all_values():
+            sheet.append_row(SHEET_HEADER)
+
+        new_rows = [
+            [
+                item.get("pub_date", datetime.now().strftime("%Y-%m-%d %H:%M")),
+                item.get("keyword"),
+                item.get("relevance_rank"),
+                item.get("total_count"),
+                item.get("title"),
+                item.get("link"),
+                item.get("top_content", ""),
+                item.get("bottom_content", ""),
+            ]
+            for item in all_news
+        ]
+
+        if new_rows:
+            sheet.append_rows(new_rows)
+            logger.info("📊 %d개의 기사가 '%s'에 추가되었습니다.", len(new_rows), sheet_name)
+
+    except Exception:
+        logger.exception("시트 저장 오류")
