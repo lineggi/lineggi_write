@@ -26,6 +26,7 @@ from crawler import naver_crawler
 from naver_service import get_news_content, save_news_to_sheet
 from perplexity_service import PerplexityService
 from telegram_service import TelegramService
+from trend_service import fetch_trend_headlines
 
 logging.basicConfig(
     level=logging.INFO,
@@ -203,30 +204,61 @@ class NewsBriefingBot:
                     return text
             time.sleep(1)
 
-    # ---------- Step 0) 키워드 추천 & 입력 ----------
-    def recommend_keywords(self):
-        """분야를 물어보고, Perplexity로 요즘 화제인 키워드를 추천해준다."""
-        if not self.cfg.use_perplexity:
-            return
-        self.send(
-            f"📈 어떤 분야의 트렌드를 볼까요? (예: 크립토)\n"
-            f"그냥 보내면 기본값 '{self.cfg.trend_domain}' 로 진행해요."
-        )
-        domain = self._wait_for_text()
-        if domain.lower() in ("기본", "default", "-"):
-            domain = self.cfg.trend_domain
+    # ---------- Step 0) 트렌드 소스 선택 & 키워드 추천 ----------
+    def _source_keyboard(self) -> str:
+        return json.dumps({
+            "inline_keyboard": [
+                [{"text": "📰 트렌드 추천받기 (코인데스크·코인니스)", "callback_data": "src:trend"}],
+                [{"text": "✍️ 직접 입력하기", "callback_data": "src:manual"}],
+            ]
+        })
 
-        self.send(f"🔎 '{domain}' 분야에서 요즘 화제인 키워드를 찾는 중...")
-        recs = self.px.discover_trending_keywords(domain)
+    def choose_source_and_recommend(self):
+        """시작 시 '트렌드 추천' vs '직접 입력'을 버튼으로 고르게 하고,
+        트렌드를 고르면 코인데스크·코인니스 헤드라인에서 키워드를 추천한다."""
+        self.send(
+            "👋 오늘 글, 어떻게 시작할까요?\n"
+            "• 📰 트렌드 추천받기 — 코인데스크·코인니스 최신 뉴스에서 키워드를 뽑아드려요\n"
+            "• ✍️ 직접 입력하기 — 원하는 키워드를 직접 입력",
+            reply_markup=self._source_keyboard(),
+        )
+
+        # 소스 선택 콜백 대기
+        source = None
+        while source is None:
+            for update in self._poll_updates():
+                cq = update.get("callback_query")
+                if not cq:
+                    continue
+                data = cq.get("data", "")
+                if cq.get("id"):
+                    self.answer_callback_query(cq["id"])
+                mid = cq.get("message", {}).get("message_id")
+                if mid:
+                    self.remove_inline_keyboard(mid)
+                if data == "src:trend":
+                    source = "trend"
+                elif data == "src:manual":
+                    source = "manual"
+            if source is None:
+                time.sleep(1)
+
+        if source == "manual":
+            return  # ask_keywords 가 직접 입력을 받는다
+
+        # 트렌드: 코인데스크·코인니스 헤드라인 -> AI 키워드 추출
+        self.send("📰 코인데스크·코인니스에서 최신 트렌드를 수집하는 중...")
+        headlines = fetch_trend_headlines()
+        recs = self.ai.extract_trending_keywords(headlines) if headlines else []
         if not recs:
-            self.send("⚠️ 트렌드 키워드를 못 가져왔어요. 원하는 키워드를 직접 입력해주세요.")
+            self.send("⚠️ 트렌드를 못 가져왔어요. 원하는 키워드를 직접 입력해주세요.")
             return
 
         # 버튼/번호로 선택할 수 있도록 추천 키워드를 순서대로 보관
         self.recommended_keywords = [r["keyword"] for r in recs]
         lines = "\n".join(f"{i}. {r['keyword']} — {r['reason']}" for i, r in enumerate(recs, 1))
         self.send(
-            f"💡 '{domain}' 요즘 화제 키워드\n\n{lines}\n\n👇 원하는 키워드를 눌러주세요.",
+            f"💡 지금 크립토 트렌드\n\n{lines}\n\n👇 원하는 키워드를 눌러주세요.",
             reply_markup=self._keyword_keyboard(),
         )
 
@@ -261,7 +293,7 @@ class NewsBriefingBot:
                 "🔍 수집할 키워드를 쉼표(,)로 구분해 입력해주세요.\n"
                 "예) 솔라나,토스뱅크,스테이블코인"
             )
-        # else: 버튼 안내는 recommend_keywords 에서 이미 보냄
+        # else: 버튼 안내는 choose_source_and_recommend 에서 이미 보냄
 
         while True:
             for update in self._poll_updates():
@@ -469,7 +501,7 @@ class NewsBriefingBot:
         self.send("🚀 뉴스 브리핑 봇 시작 (Text:Gemini)")
 
         if not self.keywords:
-            self.recommend_keywords()
+            self.choose_source_and_recommend()
             self.keywords = self.ask_keywords()
 
         if not self.collect_news():
