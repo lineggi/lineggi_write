@@ -7,6 +7,7 @@
 import json
 import logging
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -97,6 +98,22 @@ def get_full_keyboard() -> str:
 def parse_keywords(text: str) -> List[str]:
     """'솔라나, 토스뱅크' 같은 쉼표 구분 문자열을 키워드 리스트로 변환."""
     return [k.strip() for k in (text or "").split(",") if k.strip()]
+
+
+def attach_source_dates(facts: str, rep_news: List[Dict]) -> str:
+    """팩트 불릿의 '(출처: 기사N)' 뒤에 해당 기사 발행일(YYYY-MM-DD)을 붙인다.
+
+    예) (출처: 기사1) -> (출처: 기사1, 2026-07-04)
+    """
+    def _repl(m):
+        idx = int(m.group(1))
+        if 1 <= idx <= len(rep_news):
+            date = (rep_news[idx - 1].get("pub_date") or "")[:10]
+            if date:
+                return f"(출처: 기사{idx}, {date})"
+        return m.group(0)
+
+    return re.sub(r"\(출처:\s*기사(\d+)\)", _repl, facts)
 
 
 def archive_facts(facts: str) -> str:
@@ -418,6 +435,9 @@ class NewsBriefingBot:
                     "숫자·인용 등 세부 사실은 발행 전 반드시 직접 확인하세요!"
                 )
                 facts_bullets = self.ai.fallback_facts(selected_title, rep_news)
+
+            # 각 팩트의 출처 기사 발행일을 (출처: 기사N, YYYY-MM-DD) 로 붙인다
+            facts_bullets = attach_source_dates(facts_bullets, rep_news)
 
             # 팩트 전문 파일 보관 + 텔레그램 전송
             facts_path = archive_facts(facts_bullets)
