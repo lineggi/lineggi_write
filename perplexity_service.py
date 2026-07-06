@@ -17,6 +17,19 @@ MIN_BULLET_LEN = 18
 DEDUPE_JACCARD = 0.62
 
 
+def _strip_inline_citations(text: str) -> str:
+    """Perplexity가 붙이는 자체 각주를 제거한다.
+
+    - '(출처: [1])' / '(출처: [1][2])' 같은 잘못된 출처 태그
+    - 문장 중간의 '[1]', '[2][3]' 같은 각주 마커
+    우리 형식인 '(출처: 기사N)'만 남기기 위한 정리. (날짜는 main 에서 부착)
+    """
+    text = re.sub(r"\(출처:\s*(?:\[\d+\])+\)", "", text)   # (출처: [1]) 형태 제거
+    text = re.sub(r"\[\d+\]", "", text)                     # 남은 [1][2] 마커 제거
+    text = re.sub(r"[ \t]{2,}", " ", text)                  # 중복 공백 정리
+    return text.strip()
+
+
 class PerplexityService:
     """
     Perplexity를 '글쓰기'가 아니라 '팩트 불릿 압축기'로만 사용.
@@ -231,7 +244,7 @@ class PerplexityService:
             # "- ...", "• ...", "* ..." / "1) ...", "1. ..." 을 불릿으로 인정
             m = re.match(r"^(?:[-•*]|\d+[\)\.])\s+(.+)", ln)
             if m:
-                bullets.append(m.group(1).strip())
+                bullets.append(_strip_inline_citations(m.group(1).strip()))
 
         bullets = [self._ensure_source_tag(b, rep_news) for b in bullets]
 
