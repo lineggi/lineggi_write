@@ -356,18 +356,60 @@ class NewsBriefingBot:
                 except Exception:
                     top_txt, bottom_txt = "", ""
 
-                self.all_news.append({
-                    "pub_date": item.get("pub_time", datetime.now().strftime("%Y-%m-%d %H:%M")),
-                    "keyword": kw,
-                    "relevance_rank": rank,
-                    "total_count": item.get("total_count", ""),  # 시트 D열(주제검색량)
-                    "title": item.get("title", "제목 없음"),
-                    "link": item.get("link", ""),
-                    "top_content": top_txt,
-                    "bottom_content": bottom_txt,
-                })
+                self.all_news.append(self._build_news_item(item, kw, rank, top_txt, bottom_txt))
 
         return bool(self.all_news)
+
+    @staticmethod
+    def _build_news_item(item: Dict, keyword: str, rank: int, top_txt: str, bottom_txt: str) -> Dict:
+        return {
+            "pub_date": item.get("pub_time", datetime.now().strftime("%Y-%m-%d %H:%M")),
+            "keyword": keyword,
+            "relevance_rank": rank,
+            "total_count": item.get("total_count", ""),  # 시트 D열(주제검색량)
+            "title": item.get("title", "제목 없음"),
+            "link": item.get("link", ""),
+            "top_content": top_txt,
+            "bottom_content": bottom_txt,
+        }
+
+    @staticmethod
+    def _usable_count(news: List[Dict]) -> int:
+        """본문(상단/하단)이 실제로 채워진 기사 수 — 팩트 추출에 쓸 수 있는 기사."""
+        return sum(1 for n in news if (n.get("top_content") or n.get("bottom_content")))
+
+    def _supplement_news(self, selected_title: str, max_add: int = 6) -> None:
+        """선택한 제목으로 네이버 뉴스를 추가 검색해 self.all_news 에 병합한다.
+
+        기존과 중복(link)되는 기사는 제외하고, 본문까지 추출해 담는다.
+        """
+        query = self.ai._strip_topic_prefix(selected_title) or selected_title
+        try:
+            items = naver_crawler.get_news(query)
+        except Exception:
+            logger.exception("추가 뉴스 수집 실패 (query=%s)", query)
+            return
+
+        existing_links = {n.get("link") for n in self.all_news}
+        base_rank = len(self.all_news)
+        added = 0
+        for item in items:
+            link = item.get("link", "")
+            if not link or link in existing_links:
+                continue
+            try:
+                top_txt, bottom_txt = get_news_content(link)
+            except Exception:
+                top_txt, bottom_txt = "", ""
+            self.all_news.append(
+                self._build_news_item(item, query, base_rank + added + 1, top_txt, bottom_txt)
+            )
+            existing_links.add(link)
+            added += 1
+            if added >= max_add:
+                break
+
+        logger.info("제목 기반 추가 수집: %d건 (query=%s)", added, query)
 
     # ---------- Step 2) 시트 저장 ----------
     def save_to_sheet(self):
@@ -450,6 +492,16 @@ class NewsBriefingBot:
 
             # 1) 대표 기사 선별
             rep_news = self.ai.pick_representative_news(selected_title, self.all_news, k=6)
+
+            # 1-1) 본문 있는 기사가 1개뿐이면, 제목으로 관련 기사를 추가 수집
+            if self._usable_count(rep_news) < 2:
+                self.send("🔎 관련 기사가 1개뿐이라, 제목과 관련된 기사를 추가로 수집합니다...")
+                self._supplement_news(selected_title)
+                rep_news = self.ai.pick_representative_news(selected_title, self.all_news, k=6)
+                usable = self._usable_count(rep_news)
+                self.send(f"📎 활용 가능한 관련 기사 {usable}건 확보")
+                if usable < 2:
+                    self.send("⚠️ 그래도 관련 기사가 부족합니다(속보일 수 있음). 발행 전 사실을 꼭 교차 확인하세요.")
 
             # 2) 팩트 불릿 (Perplexity / Local fallback)
             facts_bullets = ""
