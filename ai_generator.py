@@ -11,6 +11,20 @@ logger = logging.getLogger(__name__)
 END_MARKER = "<END>"
 LONG_MAX_TOKENS = 8192  # 본문(장문) 생성 시 출력 한도 — 기본값 잘림 방지
 
+
+def _strip_em_dash(text: str) -> str:
+    """본문에서 em/en dash(—, –, ―)를 제거한다(모델이 규칙을 어겨도 보장).
+
+    앞뒤 공백을 정리하며 쉼표로 대체하고, 중복 쉼표·공백을 정돈한다.
+    (가운뎃점 ·는 '7·27' 등 날짜·사건명에도 쓰여 여기서 건드리지 않는다.)
+    """
+    if not text:
+        return text
+    text = re.sub(r"\s*[—–―]\s*", ", ", text)   # em/en dash → 쉼표
+    text = re.sub(r"\s*,\s*,", ",", text)         # 중복 쉼표 정리
+    text = re.sub(r"[ \t]{2,}", " ", text)        # 중복 공백 정리
+    return text
+
 # 프롬프트가 '소비자' 사용을 금지하므로, 체크리스트 마지막 항목인
 # '산업 관계자'를 폴백 종료 지점으로 삼는다. ('- ' 접두어/전각 콜론 허용)
 _CHECKLIST_END_RE = re.compile(
@@ -272,8 +286,11 @@ class AIGenerator:
 - 문장 안에서 쉼표(,) 사용을 최소화한다. 삽입구·연결용 쉼표 대신 문장을 짧게 끊어라
   (예: "정부는 규제를 준비 중이고, 시장은 혼란스럽다" → "정부는 규제를 준비 중이다. 시장은 혼란스럽다").
 - 단, 여러 항목을 나열할 때 쓰는 쉼표(예: "송금, 결제, 자산관리")는 그대로 허용한다.
+- Em dash(—, –, ―) 절대 사용 금지. 문장을 나눌 땐 마침표로 끊고, 삽입은 쉼표로 처리하라.
+- 항목을 나열할 때 가운뎃점(·)을 쓰지 말고 쉼표(,)나 '와/과'로 이어라
+  (예: "정보보안·네트워크" → "정보보안과 네트워크", "구글·팔란티어" → "구글, 팔란티어").
 """.strip()
-        return self.parse_end(self._safe_generate(prompt, is_long=True))
+        return _strip_em_dash(self.parse_end(self._safe_generate(prompt, is_long=True)))
 
     def parse_end(self, text: str) -> str:
         """END 마커(1순위) 또는 체크리스트 마지막 항목(폴백) 뒤를 잘라낸다."""
