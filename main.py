@@ -54,6 +54,7 @@ class Config:
     use_perplexity: bool
     debug_telegram_ping: bool
     trend_domain: str        # 키워드 추천 기본 분야 (예: 크립토)
+    lecture_url: str         # 글 끝에 붙일 강의 판매 링크
 
 
 def _require_env(name: str) -> str:
@@ -80,6 +81,7 @@ def load_config() -> Config:
         use_perplexity=_bool_env("USE_PERPLEXITY", True),
         debug_telegram_ping=_bool_env("DEBUG_TELEGRAM_PING", True),
         trend_domain=os.getenv("TREND_DOMAIN", "크립토"),
+        lecture_url=os.getenv("LECTURE_URL", "https://megastudyacademy.co.kr/camp/lecture/805"),
     )
 
 
@@ -481,6 +483,16 @@ class NewsBriefingBot:
         finally:
             self.processing_lock = False
 
+    def _append_cta(self, article: str, short_title: str) -> str:
+        """본문 끝에 강의 홍보 CTA와 판매 링크를 붙인다(링크는 항상 정확히)."""
+        cta = self.ai.build_cta(short_title)
+        return (
+            f"{article.rstrip()}\n\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"{cta}\n\n"
+            f"👉 크립토유치원 강의 보러 가기\n{self.cfg.lecture_url}"
+        )
+
     def _write_article(self, user_input: str):
         self.processing_lock = True
         try:
@@ -532,6 +544,10 @@ class NewsBriefingBot:
             # 3) 본문 생성 (Gemini) — END 마커 컷은 generate_article_from_facts
             #    내부의 parse_end 가 처리하므로 여기서 다시 자르지 않는다
             article = self.ai.generate_article_from_facts(selected_title, facts_bullets, rep_news)
+
+            # 3-1) 강의 홍보 CTA + 판매 링크를 항상 글 끝에 붙인다
+            if article and "❌" not in article:
+                article = self._append_cta(article, self.ai._strip_topic_prefix(selected_title))
 
             # 4) 본문 즉시 전송
             if article and "❌" not in article:
