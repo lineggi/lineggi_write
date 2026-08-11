@@ -40,6 +40,15 @@ TOPIC_CHOICES = {"1", "2", "3", "4", "5"}
 REFRESH_CALLBACK = "R"
 FACTS_LOG_DIR = "logs"          # 팩트 전문 보관 위치
 
+# 모든 글 끝에 붙는 고정 강의 홍보 CTA (링크는 cfg.lecture_url 로 별도 부착)
+CTA_BODY = (
+    "블록체인, 아직 '비트코인'이 전부라고 생각하시나요? 사실 블록체인은 금융과 의료, 공공, "
+    "물류까지 이미 세상을 바꾸고 있습니다. 뉴스로 흐름만 좇으면 정작 그 안의 진짜 변화는 놓치기 쉽습니다.\n\n"
+    "크립토유치원 강의는 코인 투자 경험이 없어도, 개발자가 아니어도 블록체인을 제대로 이해하도록 만들었습니다. "
+    "코딩 없이 원리를 배우고 COOV, 유니스왑, 더샌드박스 같은 실제 서비스 사례로 감을 잡을 수 있습니다. "
+    "블록체인을 처음 접하는 초보라면 지금 시작해보세요."
+)
+
 
 # =========================
 # 0) 설정
@@ -483,13 +492,12 @@ class NewsBriefingBot:
         finally:
             self.processing_lock = False
 
-    def _append_cta(self, article: str, short_title: str) -> str:
-        """본문 끝에 강의 홍보 CTA와 판매 링크를 붙인다(링크는 항상 정확히)."""
-        cta = self.ai.build_cta(short_title)
+    def _append_cta(self, article: str) -> str:
+        """본문 끝에 고정 강의 홍보 CTA와 판매 링크를 붙인다."""
         return (
             f"{article.rstrip()}\n\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            f"{cta}\n\n"
+            f"{CTA_BODY}\n\n"
             f"👉 크립토유치원 강의 보러 가기\n{self.cfg.lecture_url}"
         )
 
@@ -547,7 +555,7 @@ class NewsBriefingBot:
 
             # 3-1) 강의 홍보 CTA + 판매 링크를 항상 글 끝에 붙인다
             if article and "❌" not in article:
-                article = self._append_cta(article, self.ai._strip_topic_prefix(selected_title))
+                article = self._append_cta(article)
 
             # 4) 본문 즉시 전송
             if article and "❌" not in article:
