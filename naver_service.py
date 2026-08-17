@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from datetime import datetime
 
 import gspread
@@ -8,6 +9,10 @@ from bs4 import BeautifulSoup
 from gspread.exceptions import APIError, SpreadsheetNotFound
 
 logger = logging.getLogger(__name__)
+
+# 구글 API 일시 장애(재시도로 넘길 수 있는) 상태 코드
+TRANSIENT_STATUS = {429, 500, 502, 503}
+SHEET_MAX_RETRIES = 3
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -74,45 +79,75 @@ def save_news_to_sheet(sheet_name, all_news):
             "구글 서비스 계정 키 파일을 이 폴더에 넣어주세요."
         )
 
-    try:
-        client = gspread.service_account(filename=key_file)  # 최신 방식
-        spreadsheet = client.open(sheet_name)
-        sheet = spreadsheet.sheet1
-
-        if not sheet.get_all_values():
-            sheet.append_row(SHEET_HEADER)
-
-        new_rows = [
-            [
-                item.get("pub_date", datetime.now().strftime("%Y-%m-%d %H:%M")),
-                item.get("keyword"),
-                item.get("relevance_rank"),
-                item.get("total_count"),
-                item.get("title"),
-                item.get("link"),
-                item.get("top_content", ""),
-                item.get("bottom_content", ""),
-            ]
-            for item in all_news
+    new_rows = [
+        [
+            item.get("pub_date", datetime.now().strftime("%Y-%m-%d %H:%M")),
+            item.get("keyword"),
+            item.get("relevance_rank"),
+            item.get("total_count"),
+            item.get("title"),
+            item.get("link"),
+            item.get("top_content", ""),
+            item.get("bottom_content", ""),
         ]
-        sheet.append_rows(new_rows)
-        logger.info("📊 %d개 기사가 '%s'에 저장되었습니다.", len(new_rows), sheet_name)
-        return f"📊 구글 시트 '{sheet_name}'에 {len(new_rows)}개 기사 저장 완료."
+        for item in all_news
+    ]
 
-    except SpreadsheetNotFound:
-        logger.error("시트를 찾을 수 없음: %s", sheet_name)
-        return (
-            f"❌ 시트 저장 실패: '{sheet_name}' 시트를 찾을 수 없습니다.\n"
-            "① SHEET_NAME 이 시트 문서 이름과 정확히 같은지, "
-            "② 그 시트를 서비스 계정 이메일(client_email)에 편집자로 공유했는지 확인하세요."
-        )
-    except APIError as e:
-        logger.exception("구글 API 오류")
-        return (
-            "❌ 시트 저장 실패: 구글 API 오류.\n"
-            "서비스 계정에 시트 편집 권한이 있는지, Google Sheets/Drive API가 "
-            f"활성화됐는지 확인하세요. ({str(e)[:120]})"
-        )
-    except Exception as e:
-        logger.exception("시트 저장 오류")
-        return f"❌ 시트 저장 실패: {type(e).__name__} — {str(e)[:150]}"
+    for attempt in range(1, SHEET_MAX_RETRIES + 1):
+        try:
+            client = gspread.service_account(filename=key_file)  # 최신 방식
+            spreadsheet = client.open(sheet_name)
+            sheet = spreadsheet.sheet1
+
+            # 헤더 보장: 비어 있으면 추가, 첫 줄이 헤더가 아니면 맨 위에 삽입
+            existing = sheet.get_all_values()
+            if not existing:
+                sheet.append_row(SHEET_HEADER)
+            elif existing[0][: len(SHEET_HEADER)] != SHEET_HEADER:
+                sheet.insert_row(SHEET_HEADER, index=1)
+
+            sheet.append_rows(new_rows)
+
+            # 헤더 기준 필터 자동 적용 (실패해도 저장은 유지)
+            try:
+                sheet.set_basic_filter()
+            except Exception:
+                logger.warning("기본 필터 적용 실패", exc_info=True)
+
+            logger.info("📊 %d개 기사가 '%s'에 저장되었습니다.", len(new_rows), sheet_name)
+            return f"📊 구글 시트 '{sheet_name}'에 {len(new_rows)}개 기사 저장 완료."
+
+        except SpreadsheetNotFound:
+            logger.error("시트를 찾을 수 없음: %s", sheet_name)
+            return (
+                f"❌ 시트 저장 실패: '{sheet_name}' 시트를 찾을 수 없습니다.\n"
+                "① SHEET_NAME 이 시트 문서 이름과 정확히 같은지, "
+                "② 그 시트를 서비스 계정 이메일(client_email)에 편집자로 공유했는지 확인하세요."
+            )
+        except APIError as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            # 503 등 일시적 오류는 백오프 후 재시도
+            if status in TRANSIENT_STATUS and attempt < SHEET_MAX_RETRIES:
+                wait = 2 ** attempt
+                logger.warning(
+                    "구글 API 일시 오류(%s) — %d초 후 재시도 (%d/%d)",
+                    status, wait, attempt, SHEET_MAX_RETRIES,
+                )
+                time.sleep(wait)
+                continue
+            logger.exception("구글 API 오류")
+            if status in TRANSIENT_STATUS:
+                return (
+                    "❌ 시트 저장 실패: 구글 서비스 일시 오류(503 등)가 계속됩니다.\n"
+                    "구글 서버 문제이니 잠시 후 다시 시도하면 대개 해결됩니다."
+                )
+            return (
+                "❌ 시트 저장 실패: 구글 API 오류.\n"
+                "서비스 계정에 시트 편집 권한이 있는지, Google Sheets/Drive API가 "
+                f"활성화됐는지 확인하세요. ({str(e)[:120]})"
+            )
+        except Exception as e:
+            logger.exception("시트 저장 오류")
+            return f"❌ 시트 저장 실패: {type(e).__name__} — {str(e)[:150]}"
+
+    return "❌ 시트 저장 실패: 재시도 후에도 구글 API가 응답하지 않습니다."
