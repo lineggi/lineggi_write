@@ -92,6 +92,8 @@ def save_news_to_sheet(sheet_name, all_news):
         ]
         for item in all_news
     ]
+    # 발행시간 내림차순 — 가장 최신 기사가 헤더 바로 아래(맨 위)에 오도록
+    new_rows.sort(key=lambda r: r[0] or "", reverse=True)
 
     for attempt in range(1, SHEET_MAX_RETRIES + 1):
         try:
@@ -99,23 +101,16 @@ def save_news_to_sheet(sheet_name, all_news):
             spreadsheet = client.open(sheet_name)
             sheet = spreadsheet.sheet1
 
-            # 헤더 보장: 비어 있으면 추가, 첫 줄이 헤더가 아니면 맨 위에 삽입
-            existing = sheet.get_all_values()
-            if not existing:
+            # 헤더는 사용자가 직접 관리하므로, 완전히 빈 시트일 때만 추가한다
+            # (헤더/필터를 덮어쓰지 않기 위해 set_basic_filter 는 호출하지 않음)
+            if not sheet.get_all_values():
                 sheet.append_row(SHEET_HEADER)
-            elif existing[0][: len(SHEET_HEADER)] != SHEET_HEADER:
-                sheet.insert_row(SHEET_HEADER, index=1)
 
-            sheet.append_rows(new_rows)
+            # 맨 아래가 아니라 헤더 바로 아래(2행)에 삽입 → 최신 글이 항상 최상단
+            sheet.insert_rows(new_rows, row=2)
 
-            # 헤더 기준 필터 자동 적용 (실패해도 저장은 유지)
-            try:
-                sheet.set_basic_filter()
-            except Exception:
-                logger.warning("기본 필터 적용 실패", exc_info=True)
-
-            logger.info("📊 %d개 기사가 '%s'에 저장되었습니다.", len(new_rows), sheet_name)
-            return f"📊 구글 시트 '{sheet_name}'에 {len(new_rows)}개 기사 저장 완료."
+            logger.info("📊 %d개 기사가 '%s' 최상단에 저장되었습니다.", len(new_rows), sheet_name)
+            return f"📊 구글 시트 '{sheet_name}' 최상단에 {len(new_rows)}개 기사 저장 완료."
 
         except SpreadsheetNotFound:
             logger.error("시트를 찾을 수 없음: %s", sheet_name)
