@@ -52,7 +52,7 @@ CTA_BODY = (
 
 # 리드마그넷: 구독 + 이메일 댓글 시 뉴스 시트 링크를 별도 공유
 SHEET_OFFER = (
-    "📩 브런치 구독 후 댓글에 이메일을 남겨주시면, "
+    "브런치 구독 후 댓글에 이메일을 남겨주시면, "
     "제가 매일 정리하는 크립토 뉴스 시트를 무료로 보내드립니다."
 )
 
@@ -535,7 +535,7 @@ class NewsBriefingBot:
             f"{article.rstrip()}\n\n"
             "━━━━━━━━━━━━━━━━━━\n"
             f"{CTA_BODY}\n\n"
-            f"👉 크립토유치원 강의 보러 가기\n{self.cfg.lecture_url}\n\n"
+            f"크립토유치원 강의 보러 가기\n{self.cfg.lecture_url}\n\n"
             f"{SHEET_OFFER}"
         )
 
