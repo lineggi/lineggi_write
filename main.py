@@ -38,6 +38,7 @@ NEWS_PER_KEYWORD = 10           # 키워드당 수집 기사 수
 TOPIC_RANK_LIMIT = 5            # 주제 제안에 사용할 키워드별 상위 기사 수
 TOPIC_CHOICES = {"1", "2", "3", "4", "5"}
 REFRESH_CALLBACK = "R"
+NEWKW_CALLBACK = "NEWKW"        # 키워드부터 다시 입력
 FACTS_LOG_DIR = "logs"          # 팩트 전문 보관 위치
 
 # 모든 글 끝에 붙는 고정 강의 홍보 CTA (링크는 cfg.lecture_url 로 별도 부착)
@@ -102,6 +103,7 @@ def get_full_keyboard() -> str:
         "inline_keyboard": [
             [{"text": f"{i}번 선택", "callback_data": str(i)} for i in sorted(TOPIC_CHOICES)],
             [{"text": "🔄 주제 다시 제안받기", "callback_data": REFRESH_CALLBACK}],
+            [{"text": "🆕 키워드 다시 입력하기", "callback_data": NEWKW_CALLBACK}],
         ]
     }
     return json.dumps(keyboard)
@@ -479,8 +481,37 @@ class NewsBriefingBot:
 
         if user_input == REFRESH_CALLBACK:
             self._regenerate_topics()
+        elif user_input == NEWKW_CALLBACK:
+            self._restart_with_new_keywords()
         elif user_input in TOPIC_CHOICES:
             self._write_article(user_input)
+
+    def _restart_with_new_keywords(self):
+        """봇 종료 없이 키워드 입력부터 다시 진행한다(소스 선택 → 수집 → 주제 제안)."""
+        self.processing_lock = True
+        try:
+            # 이전 실행 상태 초기화
+            self.keywords = []
+            self.recommended_keywords = []
+            self.all_news = []
+            self.suggestion_data = []
+            self.last_topics = ""
+
+            self.choose_source_and_recommend()
+            self.keywords = self.ask_keywords()
+
+            if not self.collect_news():
+                retry_kb = json.dumps({
+                    "inline_keyboard": [
+                        [{"text": "🆕 키워드 다시 입력하기", "callback_data": NEWKW_CALLBACK}]
+                    ]
+                })
+                self.send("❌ 수집된 뉴스가 없습니다. 다른 키워드로 다시 시도해주세요.", reply_markup=retry_kb)
+                return
+            self.save_to_sheet()
+            self.suggest_topics()
+        finally:
+            self.processing_lock = False
 
     def _regenerate_topics(self):
         self.processing_lock = True
