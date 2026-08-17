@@ -50,6 +50,12 @@ CTA_BODY = (
     "블록체인을 처음 접하는 초보라면 지금 시작해보세요."
 )
 
+# 리드마그넷: 구독 + 이메일 댓글 시 뉴스 시트 링크를 별도 공유
+SHEET_OFFER = (
+    "📩 브런치 구독 후 댓글에 이메일을 남겨주시면, "
+    "제가 매일 정리하는 크립토 뉴스 시트를 무료로 보내드립니다."
+)
+
 
 # =========================
 # 0) 설정
@@ -529,7 +535,8 @@ class NewsBriefingBot:
             f"{article.rstrip()}\n\n"
             "━━━━━━━━━━━━━━━━━━\n"
             f"{CTA_BODY}\n\n"
-            f"👉 크립토유치원 강의 보러 가기\n{self.cfg.lecture_url}"
+            f"👉 크립토유치원 강의 보러 가기\n{self.cfg.lecture_url}\n\n"
+            f"{SHEET_OFFER}"
         )
 
     def _write_article(self, user_input: str):
