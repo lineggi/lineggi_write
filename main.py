@@ -93,7 +93,7 @@ def load_config() -> Config:
         gemini_api_key=_require_env("GEMINI_API_KEY"),
         perplexity_api_key=os.getenv("PERPLEXITY_API_KEY", ""),
         my_chat_id=_require_env("MY_CHAT_ID"),
-        sheet_name=os.getenv("SHEET_NAME", "AI_Writing_Brunch"),
+        sheet_name=os.getenv("SHEET_NAME", "Brunch_news"),
         use_perplexity=_bool_env("USE_PERPLEXITY", True),
         debug_telegram_ping=_bool_env("DEBUG_TELEGRAM_PING", True),
         trend_domain=os.getenv("TREND_DOMAIN", "크립토"),
